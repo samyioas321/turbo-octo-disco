@@ -1,0 +1,160 @@
+name: Ultimate-Win10-CRD-Counter
+
+on: 
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+    
+      # -----------------------------------------------------------
+      # خطوة جديدة: إدارة العداد الخارجي (مع نظام إعادة المحاولة)
+      # -----------------------------------------------------------
+      - name: Manage External Counter (Gist)
+        shell: pwsh
+        env:
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+          GIST_ID: ${{ secrets.GIST_ID }}
+        run: |
+          $headers = @{
+              "Authorization" = "token $env:GIST_TOKEN"
+              "Accept" = "application/vnd.github.v3+json"
+          }
+          $url = "https://api.github.com/gists/$env:GIST_ID"
+
+          $success = $false
+          $retryCount = 0
+
+          # حلقة تكرار لا تتوقف إلا عند النجاح
+          while (-not $success) {
+              try {
+                  Write-Host "🔄 Fetching current counter (Attempt: $($retryCount + 1))..."
+
+                  # 1. جلب القيمة الحالية من Gist
+                  # استخدام ErrorAction Stop للتأكد من التقاط الأخطاء
+                  $response = Invoke-RestMethod -Uri $url -Headers $headers -Method Get -ErrorAction Stop
+                  $currentCount = [int]$response.files."counter.txt".content
+                  
+                  # 2. زيادة العداد بمقدار 1
+                  $newCount = $currentCount + 1
+                  Write-Host "🔢 Proposed New Value: $newCount"
+
+                  # 3. تحديث القيمة في Gist
+                  $body = @{
+                      files = @{
+                          "counter.txt" = @{
+                              content = [string]$newCount
+                          }
+                      }
+                  } | ConvertTo-Json -Depth 10
+
+                  Invoke-RestMethod -Uri $url -Headers $headers -Method Patch -Body $body -ErrorAction Stop
+                  
+                  # 4. حفظ الرقم في متغير بيئة لاستخدامه في الخطوات القادمة
+                  echo "DEVICE_NUM=$newCount" >> $env:GITHUB_ENV
+                  
+                  Write-Host "✅ Counter Updated Successfully to: $newCount"
+                  $success = $true # كسر الحلقة هنا لأن العملية نجحت
+              }
+              catch {
+                  Write-Warning "⚠️ Failed to update counter (likely collision or network error)."
+                  Write-Warning $_.Exception.Message
+                  
+                  # انتظار عشوائي بين 1 و 5 ثواني لتقليل الضغط ومنع التصادم مرة أخرى
+                  $sleepTime = Get-Random -Minimum 1 -Maximum 6
+                  Write-Host "⏳ Retrying in $sleepTime seconds..."
+                  Start-Sleep -Seconds $sleepTime
+                  
+                  $retryCount++
+              }
+          }
+
+      - name: Download Chrome Installer
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://dl.google.com/chrome/install/latest/chrome_installer.exe" -OutFile "chrome_installer.exe"
+          Start-Process -FilePath "chrome_installer.exe" -Args "/silent /install" -Wait
+
+      - name: Download and Install CRD
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://dl.google.com/edgedl/chrome-remote-desktop/chromeremotedesktophost.msi" -OutFile "crd.msi"
+          Start-Process -FilePath "msiexec.exe" -Args "/i crd.msi /quiet /qn" -Wait
+
+      # تثبيت VirtualBox
+      - name: Install VirtualBox 6.1.48
+        shell: pwsh
+        run: |
+          Write-Host "⬇️ Downloading VirtualBox..."
+          $vboxUrl = "https://download.virtualbox.org/virtualbox/6.1.48/VirtualBox-6.1.48-159471-Win.exe"
+          $installerPath = "VirtualBox-Setup.exe"
+           
+          (New-Object System.Net.WebClient).DownloadFile($vboxUrl, $installerPath)
+           
+          Write-Host "⚙️ Installing VirtualBox..."
+          Start-Process -FilePath $installerPath -Args "--silent --ignore-reboot" -Wait
+          Write-Host "✅ VirtualBox Installed Successfully!"
+
+      # تحميل الملف الكبير على سطح المكتب (Desktop)
+      - name: Download and Extract to DESKTOP
+        shell: cmd
+        run: |
+          @echo off
+          echo ⬇️ Downloading large file directly to Desktop...
+           
+          REM ================================================================
+          REM رابط الملف الخاص بك
+          set "FILE_URL=https://huggingface.co/datasets/swelam100/rdp/resolve/main/win.zip"
+          REM ================================================================
+
+          REM الانتقال إلى سطح المكتب الخاص بالمستخدم الحالي
+          cd /d "%USERPROFILE%\Desktop"
+           
+          REM التحميل باستخدام Curl
+          curl -L -o BigFile.zip "%FILE_URL%"
+
+          echo 📦 Extracting files here...
+          7z x BigFile.zip -y
+           
+          echo 🧹 Cleaning up zip file...
+          del BigFile.zip
+           
+          echo Files Downloaded Successfully > "Download_Complete.txt"
+           
+          echo ✅ Done! Files are on your Desktop.
+
+      - name: Start Chrome Remote Desktop
+        shell: pwsh
+        env:
+          CRD_CODE: ${{ secrets.CRD_CODE1 }}
+          CRD_PIN: ${{ secrets.CRD_PIN }}
+        run: |
+          $exePath = "${Env:PROGRAMFILES(X86)}\Google\Chrome Remote Desktop\CurrentVersion\remoting_start_host.exe"
+           
+          # استخدام رقم العداد القادم من الخطوة الأولى في التسمية
+          # مثال للتسمية: MyAccount-Machine-5
+          $UniqueName = "${{ github.actor }}-Machine-${{ env.DEVICE_NUM }}"
+           
+          Write-Host "======================================================"
+          Write-Host "🖥️ SETTING RDP NAME TO: $UniqueName"
+          Write-Host "======================================================"
+           
+          & $exePath --code="$env:CRD_CODE" --redirect-url="https://remotedesktop.google.com/_/oauthredirect" --name="$UniqueName" --pin=$env:CRD_PIN
+
+      - name: Success Message
+        shell: pwsh
+        run: |
+          Write-Host "======================================================"
+          Write-Host "✅ Windows 10 Environment is READY!"
+           
+          # استدعاء الاسم النهائي للعرض
+          $FinalName = "${{ github.actor }}-Machine-${{ env.DEVICE_NUM }}"
+           
+          Write-Host "👉 Connect to the PC named '$FinalName' using your PIN."
+          Write-Host "======================================================"
+
+      - name: Keep Alive
+        shell: pwsh
+        run: |
+          while ($true) { Start-Sleep -Seconds 300 }
